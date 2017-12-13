@@ -21,18 +21,11 @@ with open(version_file) as fp:
 setup(
     name="pyreleaseplugin",
     version=__version__,
-    author="The Discovery Team",
-    author_email="discovery-l@socrata.com",
-    description=("A setuptools plugin for simplifying the release of Python modules"),
-    license="TBD",
-    url="https://github.com/socrata/python-release-plugin",
+    author="Devils Team",
+    author_email="_CP_RD_Team_Devils@manh.com",
+    description="A setuptools plugin for simplifying the release of Python modules",
     install_requires=install_requires_list,
     tests_require=tests_require,
     include_package_data=True,
     packages=find_packages(exclude=["tests"]),
-    classifiers=[
-        "Development Status :: 2 - Pre-Alpha",
-        "Intended Audience :: Socrata",
-        "Topic :: Software Development :: Libraries :: Python Modules",
-    ],
     cmdclass={"test": PyTest, "clean": CleanCommand, "release": ReleaseCommand})

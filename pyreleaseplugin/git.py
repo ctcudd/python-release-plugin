@@ -1,4 +1,17 @@
-from subprocess import Popen
+from subprocess import Popen, PIPE, STDOUT
+
+
+def get_current_branch():
+
+    p = Popen("git rev-parse --abbrev-ref HEAD", shell=True, stdin=PIPE, stdout=PIPE, stderr=STDOUT, close_fds=True)
+    branch = p.stdout.read().strip()
+    return branch
+
+
+def get_current_commit_sha():
+    p = Popen("git rev-parse --short HEAD", shell=True, stdin=PIPE, stdout=PIPE, stderr=STDOUT, close_fds=True)
+    sha = p.stdout.read().strip()
+    return sha
 
 
 def is_tree_clean():
@@ -11,14 +24,16 @@ def is_tree_clean():
     return False if Popen(["git", "diff-files", "--quiet"]).wait() else True
 
 
-def commit_changes(version):
+def commit_changes(version, commit_message=None):
     """
     Commit current release changes.
 
     Args:
         version (str): The version specifier to include in the commit message
+        commit_message (str): The commit message
     """
-    commit_message = "Update version file and changlog for release {}".format(version)
+    if commit_message is None:
+        commit_message = "Update version file and changlog for release {}".format(version)
     code = Popen(["git", "commit", "-a", "-m", commit_message]).wait()
     if code:
         raise RuntimeError("Error committing changes")

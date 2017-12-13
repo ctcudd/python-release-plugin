@@ -23,15 +23,18 @@ a section named "release").
 """
 
 from datetime import datetime
+import time
 import os
 import re
 from setuptools import Command
 from subprocess import Popen
 
-from pyreleaseplugin.git import commit_changes, is_tree_clean, push, tag
-
+from pyreleaseplugin.git import commit_changes, is_tree_clean, push, tag, get_current_branch, get_current_commit_sha
+from pyreleaseplugin.docker_command import DockerCommand
 
 VERSION_RE = re.compile('^__version__\s*=\s*"(.*?)"$', re.MULTILINE)
+SNAPSHOT_VERSION_RE = re.compile('^(.*?)-SNAPSHOT', re.MULTILINE)
+RELEASE_CANDIDATE_VERSION_RE = re.compile('^(.*?)rc', re.MULTILINE)
 
 
 def current_version_from_version_file(version_file):
@@ -45,41 +48,44 @@ def current_version_from_version_file(version_file):
         The current version specifier
     """
     with open(version_file, "r") as infile:
-        contents = infile.read()
-
-    m = VERSION_RE.search(contents)
-    try:
-        version = m.group(1)
-    except:
-        raise IOError(
-            "Unable to find __version__ variable defined in {}".format(version_file))
-
+        version = infile.read()
     return version
 
 
-def update_version_file(filename, new_version):
+def update_version_file(filename, version):
+    with open(filename, "w") as outfile:
+        outfile.write(version)
+    return version
+
+
+def get_old_version(version_file):
     """
-    Update the version file at the path specified by `filename`.
+    Extract the current version from `version_file`.
 
     Args:
-        filename (str): The path to the version file
-        new_version (str): The new version specifier
+        version_file (str): A path to a Python file with a version specifier
 
     Returns:
-        The new version specifier
+        The current version specifier
     """
-    old_version = current_version_from_version_file(filename)
-    new_version = new_version or bump_patch_version(old_version)
+    with open(version_file, "r") as infile:
+        version = infile.read()
+    return version
 
-    with open(filename, "r") as infile:
-        contents = infile.read()
 
-    contents = VERSION_RE.sub('__version__ = "{}"'.format(new_version), contents)
-
-    with open(filename, "w") as outfile:
-        outfile.write(contents)
-
+def get_new_version(old_version):
+    m = RELEASE_CANDIDATE_VERSION_RE.search(old_version)
+    try:
+        new_version = m.group(1)
+    except:
+        raise IOError(
+            "Unable to construct new version")
     return new_version
+
+
+def get_next_rc_version(new_version):
+    rc_version = "{}rc".format(bump_patch_version(new_version))
+    return rc_version
 
 
 def bump_patch_version(version):
@@ -145,7 +151,7 @@ def get_input():
 
     try:
         while True:
-            lines.append(input())
+            lines.append(raw_input())
     except EOFError:
         pass
 
@@ -165,13 +171,17 @@ def build():
         raise RuntimeError("Error building wheel")
 
 
-def publish_to_pypi():
+def publish():
     """
     Publish the distribution to our local PyPi.
     """
-    code = Popen(["python", "setup.py", "bdist_wheel", "upload", "-r", "artifactory"]).wait()
+
+    # code = Popen(["python", "setup.py", "bdist_wheel", "upload", "-r", "manh"]).wait()
+
+    code = Popen(["twine", "upload", "dist/*", "-r", "manh"]).wait()
+
     if code:
-        raise RuntimeError("Error publishing to PyPi")
+        raise RuntimeError("Error publishing python library")
 
 
 def clean_description(description):
@@ -205,7 +215,8 @@ class ReleaseCommand(Command):
         ("description=", "d", "a description of the work done in the release"),
         ("version-file=", "f", "a Python file containing the module version number"),
         ("changelog-file=", "f", "a Markdown file containing a log changes"),
-        ("push-to-master=", "p", "whether the changes from this script should be pushed to master")
+        ("push-to-master=", "p", "whether the changes from this script should be pushed to master"),
+        ("dockerfile-dir=", "D", "the directory where the Dockerfile resides")
     ]
 
     def initialize_options(self):
@@ -215,6 +226,7 @@ class ReleaseCommand(Command):
         self.changelog_file = None  # path to a changelog file
         self.description = None     # description text
         self.push_to_master = None  # whether to push to master
+        self.dockerfile_dir = None
 
     def finalize_options(self):
         if not os.path.exists(self.version_file):
@@ -225,23 +237,48 @@ class ReleaseCommand(Command):
             raise IOError(
                 "Specified changelog file ({}) does not exist".format(self.changelog_file))
 
-        self.old_version = current_version_from_version_file(self.version_file)
-        self.version = self.version or bump_patch_version(self.old_version)
+        self.old_version = get_old_version(self.version_file)
+        self.version = get_new_version(self.old_version)
+        self.next_version = get_next_rc_version(self.version)
         self.description = clean_description(self.description) or get_description()
         self.push_to_master = True if self.push_to_master is not None else None
 
     def run(self):
+        current_branch = get_current_branch()
+        commit = get_current_commit_sha()
+        timestamp = int(time.time())
+
+        long_release_version = "{}-{}-{}".format(self.version, commit, timestamp)
+
+        print("Executing release process.  branch: {}, commit: {}, time: {}, dockerfile: {}".format(current_branch, commit, timestamp, self.dockerfile_dir))
+
+        print("old_version: {}, new_version: {}, long_version: {}, next_version:{}".format(
+            self.old_version, self.version, long_release_version, self.next_version
+        ))
         # fail fast if working tree is not clean
         if not is_tree_clean():
             print("Git working tree is not clean. Commit or stash uncommitted changes "
                   "before proceeding.")
             raise IOError()
 
-        # update version specifier in module
-        update_version_file(self.version_file, self.version)
+        # TODO: make sure the "master" branch is checked out, fail fast if not
+
+        # if current_branch != "master":
+        #     print("Releases should only be performed from the 'master' branch.  Please checkout the master branch"
+        #           " before proceeding")
+        #     raise IOError()
 
         # update changelog
         add_changelog_entry(self.changelog_file, self.version, self.description)
+
+        # update version specifier to long version format
+        update_version_file(self.version_file, long_release_version)
+
+        # commit changes
+        commit_changes(long_release_version)
+
+        # update version specifier a second time with the release version
+        update_version_file(self.version_file, self.version)
 
         # commit changes
         commit_changes(self.version)
@@ -249,16 +286,42 @@ class ReleaseCommand(Command):
         # tag the release
         tag(self.version)
 
+        # tag it again with long version format
+        tag(long_release_version)
+
         # push changes to Github
         # NOTE: this will push from the currently checked out branch to origin/master;
-        # TODO: accommodate releases from other branches
         push_to_master = self.push_to_master or parse_y_n_response(
-            input("Would you like to push the changes to master? [y/n] ").strip())
+            raw_input("Would you like to push the changes to master? [y/n] ").strip())
 
         if push_to_master:
-            print("Pushing changes to the master branch on Github")
+            print("Pushing changes to the master branch")
             push("master")
 
         # build and publish
         build()
-        publish_to_pypi()
+
+        publish_python_dist = parse_y_n_response(
+            raw_input("Would you like to publish the python distribution? [y/n]").strip())
+
+        if publish_python_dist:
+            print("Publishing python distribution")
+            publish()
+
+            if self.dockerfile_dir is not None:
+                # Must build  and publish python distribution in order to build/publish docker image
+                # TODO buildDockerImage()
+                publish_docker_image = parse_y_n_response(
+                    raw_input("Would you like to publish the docker image? [y/n]").strip())
+
+                if publish_docker_image:
+                    print("Publishing docker image")
+                    # TODO publishDockerImage()
+
+        # set version back to release_candidate
+        update_version_file(self.version_file, self.next_version)
+        commit_changes(self.version, "Prepare for next development iteration")
+
+        if push_to_master:
+            print("Pushing changes to the master branch")
+            push("master")
